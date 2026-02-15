@@ -1,0 +1,67 @@
+<#
+.SYNOPSIS
+    Automação para criação de usuários em massa no Microsoft 365 via Microsoft Graph API.
+.DESCRIPTION
+    Este script lê um arquivo CSV fornecido pelo RH contendo os dados dos novos colaboradores
+    e provisiona as contas automaticamente no Entra ID (Azure AD), gerando senhas temporárias
+    e forçando a troca no primeiro login. Inclui tratamento de erros e validação de dados.
+.AUTHOR
+    Gabriel Ayres Vendramini
+#>
+
+# 1. Conecta ao ambiente do Microsoft 365 com as permissões corretas
+Write-Host "Conectando ao Microsoft Graph..." -ForegroundColor Cyan
+Connect-MgGraph -Scopes "User.ReadWrite.All", "Directory.ReadWrite.All"
+
+# 2. Define o caminho da planilha CSV com os dados dos usuários
+$CaminhoCSV = "C:\Suporte\NovosUsuarios.csv"
+
+# 3. Importa os dados da planilha para a memória
+$Usuarios = Import-Csv -Path $CaminhoCSV
+
+# 4. Validação de Segurança: Checa se a coluna principal existe antes de rodar o script
+if (-not $Usuarios[0].EmailCorporate) {
+    Write-Error "[ERRO CRÍTICO] Coluna 'EmailCorporate' não encontrada no CSV. Verifique a formatação do arquivo."
+    Disconnect-MgGraph
+    return
+}
+
+Write-Host "Iniciando o provisionamento de $($Usuarios.Count) usuário(s)..." -ForegroundColor Yellow
+
+# 5. Inicia o laço de repetição com tratamento de erros (Try/Catch)
+foreach ($User in $Usuarios) {
+    try {
+        # Tratamento: Isola apenas a primeira parte do e-mail para usar como Nickname
+        $Nickname = $User.EmailCorporate.Split("@")[0]
+
+        # Tratamento de Senha: Usa a do CSV ou gera uma forte genérica se vier vazia
+        $SenhaStr = if ([string]::IsNullOrWhiteSpace($User.SenhaTemporaria)) { "Mudar@2026!" } else { $User.SenhaTemporaria }
+
+        # Define o perfil de senha temporária
+        $PasswordProfile = @{
+            Password = $SenhaStr
+            ForceChangePasswordNextSignIn = $true
+        }
+
+        # Cria o usuário no Microsoft 365 (O ErrorAction Stop obriga a pular para o Catch se der erro)
+        New-MgUser -DisplayName $User.NomeCompleto `
+                   -UserPrincipalName $User.EmailCorporate `
+                   -MailNickname $Nickname `
+                   -PasswordProfile $PasswordProfile `
+                   -AccountEnabled $true `
+                   -UsageLocation "BR" `
+                   -ErrorAction Stop 
+
+        # Mensagem de sucesso na tela
+        Write-Host "[SUCESSO] O usuário $($User.NomeCompleto) foi criado e está pronto para uso!" -ForegroundColor Green
+
+    } catch {
+        # Captura e exibe o erro exato sem parar o resto do script
+        Write-Host "[ERRO] Falha ao criar $($User.NomeCompleto): $_" -ForegroundColor Red
+    }
+}
+
+# 6. Desconecta por segurança ao finalizar
+Write-Host "Desconectando do Microsoft Graph..." -ForegroundColor Cyan
+Disconnect-MgGraph
+Write-Host "Processo de Onboarding finalizado." -ForegroundColor Green
